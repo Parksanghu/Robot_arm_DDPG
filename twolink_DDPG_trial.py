@@ -30,8 +30,8 @@ reference: 'https://seunghan96.github.io/rl/38.(paper3)DDPG-%EC%BD%94%EB%93%9C%E
 Updates:
 '''
  
-import gymnasium as gym
 import time
+import wandb
 import matplotlib
 import matplotlib.pyplot as plt
 import argparse
@@ -52,20 +52,21 @@ from lagrangian_dynamics_env import LagrangianDynamicsEnv
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
 with open('stateaction.csv', mode='r') as file:
     reader = csv.reader(file)
     next(reader)  # Skip the header if there is one
     points = [tuple(map(float, row)) for row in reader] # Convert each row to a tuple (or keep as list)
 
 sa = torch.tensor(points, dtype=torch.float32, device=device)
-state_de = sa[:,:4].clone()
-action_de = sa[:,4:].clone()
+sa += torch.tensor([np.pi/2,0,0,0,np.pi/2,0,0,0], dtype=torch.float32, device=device)
+state_de = sa[:,:6].clone()
+action_de = sa[:,6:].clone()
 next_state_de = state_de[1:].clone()
 next_state_de = torch.cat((next_state_de, next_state_de[-1, :].unsqueeze(0)))
-reward_de = torch.ones([146,1], dtype=torch.float32, device=device)
-done_de = torch.zeros([146,1], dtype=torch.bool, device=device)
+reward_de = torch.ones([145,1], dtype=torch.float32, device=device)
+done_de = torch.zeros([145,1], dtype=torch.bool, device=device)
 done_de[-1] = True
+target = state_de[:,4:6]
 
 Transition = namedtuple('Transition',
                         ('state', 'action', 'reward', 'next_state', 'done'))
@@ -73,12 +74,11 @@ Transition = namedtuple('Transition',
 last_score_plot = [0]
 avg_score_plot = [0]
 
-
-
 def draw_fig():
   plt.title('reward')
   plt.plot(last_score_plot, '-')
   plt.plot(avg_score_plot, 'r-')
+
 
 def save_models_and_optimizers(actor, critic, actor_target, critic_target, actor_optimizer, critic_optimizer, filename):
     torch.save({
@@ -102,13 +102,16 @@ def load_models_and_optimizers(actor, critic, actor_target, critic_target, actor
 parser = argparse.ArgumentParser(description='PyTorch DDPG solution of TwoLinkRobotArm')
 
 parser.add_argument('--gamma', type=float, default=0.99)
-parser.add_argument('--lr', type=float, default=1e-3)
+parser.add_argument('--lambd', type=float, default=0.5)
+parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument('--tau', type=float, default=0.001)
 parser.add_argument('--batch_size', type=float, default=64)
-parser.add_argument('--max_episode', type=int, default=6000)
-parser.add_argument('--max_explore_eps', type=int, default=4800)
+parser.add_argument('--max_episode', type=int, default=4000)
+parser.add_argument('--max_explore_eps', type=int, default=4000)
 
 cfg = parser.parse_args()
+
+wandb.init(project='twolink-DDPG', config = vars(cfg))
 
 class Memory(object):
   def __init__(self, memory_size=100000):
@@ -124,7 +127,6 @@ class Memory(object):
   def sample_batch(self, batch_size):
     return random.sample(self.memory, batch_size)
 
-
 # Simple Ornstein-Uhlenbeck Noise generator
 # Reference: https://github.com/rllab/rllab/blob/master/rllab/exploration_strategies/ou_strategy.py
 def OUNoise():
@@ -134,13 +136,12 @@ def OUNoise():
   state = 0
   while True:
     yield state
-    state += theta * (mu - state) + sigma * np.random.randn()
-
+    state = state + theta * (mu - state) + sigma * np.random.randn()
 
 class Actor(nn.Module):
   def __init__(self):
     super(Actor, self).__init__()
-    self.fc_1 = nn.Linear(4, 64)
+    self.fc_1 = nn.Linear(6, 64)
     self.fc_2 = nn.Linear(64, 32)
     self.fc_out = nn.Linear(32, 2, bias=False)
     init.xavier_normal_(self.fc_1.weight)
@@ -153,11 +154,10 @@ class Actor(nn.Module):
     out = 10.0 * F.tanh(self.fc_out(out))
     return out
 
-
 class Critic(nn.Module):
   def __init__(self):
     super(Critic, self).__init__()
-    self.fc_state = nn.Linear(4, 32)
+    self.fc_state = nn.Linear(6, 32)
     self.fc_action = nn.Linear(2, 32)
     self.fc = nn.Linear(64, 128)
     self.fc_value = nn.Linear(128, 1, bias=False)
@@ -174,14 +174,12 @@ class Critic(nn.Module):
     out = self.fc_value(out)
     return out
 
-
 def get_action(_actor, state):
   if not isinstance(state, torch.Tensor):
     state = torch.from_numpy(state, dtype = torch.float32, device = device)
   action = _actor(state)
   action = torch.clamp(action, float(env.action_space.low[0]), float(env.action_space.high[0]))
   return action
-
 
 def get_q_value(_critic, state, action):
   if not isinstance(state, torch.Tensor):
@@ -191,7 +189,6 @@ def get_q_value(_critic, state, action):
   q_value = _critic(state, action)
   return q_value
 
-
 def update_actor(state):
   action = actor(state)
   action = torch.clamp(action, float(env.action_space.low[0]), float(env.action_space.high[0]))
@@ -199,18 +196,18 @@ def update_actor(state):
   q_value = -torch.mean(critic(state, action))
   actor_optimizer.zero_grad()
   q_value.backward()
+  torch.nn.utils.clip_grad_norm_(actor.parameters(), 5)
   actor_optimizer.step()
   return
-
 
 def update_critic(state, action, target):
   q_value = critic(state, action)
   loss = F.mse_loss(q_value, target)
   critic_optimizer.zero_grad()
   loss.backward()
+  torch.nn.utils.clip_grad_norm_(critic.parameters(), 5)
   critic_optimizer.step()
   return
-
 
 def soft_update(target, source, tau):
   for target_param, param in zip(target.parameters(), source.parameters()):
@@ -226,64 +223,59 @@ actor_target.load_state_dict(actor.state_dict())
 critic_target.load_state_dict(critic.state_dict())
 
 actor_optimizer = optim.Adam(actor.parameters(), lr=cfg.lr)
-critic_optimizer = optim.Adam(critic.parameters(), lr=10*cfg.lr)
-
-target = next_state_de
-memory = Memory(memory_size=100000)
+critic_optimizer = optim.Adam(critic.parameters(), lr=1.5*cfg.lr)
+wandb.watch(actor, log = 'all')
+wandb.watch(critic, log = 'all')
+memory = Memory(memory_size=10000)
 memory_de = Memory(memory_size=1000)
+for i in range(145):
+  memory_de.append(state_de[i],action_de[i],reward_de[i],next_state_de[i],done_de[i])
 noise = OUNoise()
 filename = '2000epsmodel.pth'
 # load_models_and_optimizers(actor, critic, actor_target, critic_target, actor_optimizer, critic_optimizer, filename)
 # print('weights loaded!')
 
-for i in range(145):
-  memory_de.append(state_de[i],action_de[i],reward_de[i],next_state_de[i],done_de[i])
 def main():
   with torch.autograd.set_detect_anomaly(True):
     iteration_now = 0
     iteration = 0
-    LAMBDA = 0.5
-    state, _ = env.reset()
-    state = torch.tensor(state-[np.pi/2,0,0,0], dtype=torch.float32, device=device)
+    observation, _ = env.reset()
+    observation = torch.tensor(observation+[np.pi/2,0,0,0], dtype=torch.float32, device=device)
+    state = torch.hstack((observation, target[iteration_now]))
     noise = OUNoise()
     episode = 0
     episode_score = 0
     episode_steps = 0
-    # EPS_START = 0.9
-    # EPS_END = 0.05
-    # EPS_DECAY = 1000
     memory_warmup = cfg.batch_size * 3
     start_time = time.perf_counter()
     while episode < cfg.max_episode:
       print('\riter {}, ep {}'.format(iteration_now, episode), end='')
       # blend determinstic action with random action during exploration
       action = get_action(actor, state)
-      # action = action_de[iteration_now]
-      # blend determinstic action with random action during exploration
       if episode < cfg.max_explore_eps:
         p = episode / cfg.max_explore_eps
         action = action.detach() + 1.5 * (1 - p) * next(noise)
-      observation, reward, terminated, truncated, _ = env.step(action.detach().cpu().numpy(), target[iteration_now].detach().cpu().numpy()-[np.pi/2,0,0,0])
+      observation, reward, terminated, truncated, _ = env.step(action.detach().cpu().numpy())
       reward = torch.tensor([reward], dtype=torch.float32, device=device)
       done = terminated or truncated
-      next_state = torch.tensor(observation-[np.pi/2,0,0,0], dtype=torch.float32, device=device)
+      observation = torch.tensor(observation+[np.pi/2,0,0,0], dtype=torch.float32, device=device)
+      next_state = torch.hstack((observation, target[iteration_now+1]))
       memory.append(state, action, reward, next_state, done)
       if len(memory) >= memory_warmup:
-        print('here')
-        memory_batch = memory.sample_batch(int(LAMBDA *cfg.batch_size))
+        memory_batch = memory.sample_batch(int(cfg.lambd *cfg.batch_size))
         batch = Transition(*zip(*memory_batch))
-        state_batch_ = torch.cat(batch.state).view(-1, 4)
+        state_batch_ = torch.cat(batch.state).view(-1, 6)
         action_batch_ = torch.cat(batch.action).view(-1, 2)
         reward_batch_ = torch.cat(batch.reward)
-        next_state_batch_ = torch.cat((batch.next_state)).view(-1, 4)
+        next_state_batch_ = torch.cat((batch.next_state)).view(-1, 6)
         done_tensors_ = [torch.tensor([0 if not x else 1], dtype = torch.float32, device=device) for x in batch.done]
         done_batch_ = torch.cat(done_tensors_)
-        memory_batch_de = memory_de.sample_batch(int((1-LAMBDA) * cfg.batch_size))
+        memory_batch_de = memory_de.sample_batch(int((1-cfg.lambd) * cfg.batch_size))
         batch_de = Transition(*zip(*memory_batch_de))
-        state_batch_de = torch.cat(batch_de.state).view(-1, 4)
+        state_batch_de = torch.cat(batch_de.state).view(-1, 6)
         action_batch_de = torch.cat(batch_de.action).view(-1, 2)
         reward_batch_de = torch.cat(batch_de.reward)
-        next_state_batch_de = torch.cat((batch_de.next_state)).view(-1, 4)
+        next_state_batch_de = torch.cat((batch_de.next_state)).view(-1, 6)
         done_tensors_de = [torch.tensor([0 if not x else 1], dtype = torch.float32, device=device) for x in batch_de.done]
         done_batch_de = torch.cat(done_tensors_de)
         state_batch = torch.cat((state_batch_, state_batch_de))
@@ -302,27 +294,35 @@ def main():
         # soft update
         soft_update(actor_target, actor, cfg.tau)
         soft_update(critic_target, critic, cfg.tau)
+        
       episode_score = episode_score + reward.item()
       episode_steps = episode_steps + 1
       iteration_now = iteration_now + 1
       iteration += 1
-      if done or iteration_now == 145:
+      if done or iteration_now == 144:
         print(', score {:8f}, steps {}, ({:2f} sec/eps)'.
               format(episode_score, episode_steps, time.perf_counter() - start_time))
         avg_score_plot.append(avg_score_plot[-1] * 0.99 + episode_score * 0.01)
         last_score_plot.append(episode_score)
+        wandb.log({
+                    'episode': episode,
+                    'episode_score': episode_score,
+                    'avg_score': avg_score_plot[-1],
+                    'episode_steps': episode_steps
+                })
         drawnow(draw_fig)
         start_time = time.perf_counter()
         episode += 1
         episode_score = 0
         episode_steps = 0
         iteration_now = 0
-        state, _ = env.reset()
-        state = torch.tensor(state-[np.pi/2,0,0,0], dtype=torch.float32, device=device)
+        observation, _ = env.reset()
+        observation = torch.tensor(observation+[np.pi/2,0,0,0], dtype=torch.float32, device=device)
+        state = torch.hstack((observation, target[iteration_now]))
         noise = OUNoise()
       else:
         state = next_state.detach()
-      
+
   save_models_and_optimizers(actor, critic, actor_target, critic_target, actor_optimizer, critic_optimizer, 'checkpoint.pth')
   print('weights saved!')  
   env.close()

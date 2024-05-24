@@ -84,9 +84,13 @@ with open('coordinates.csv', mode='r') as file:
 
 
 theta_path, dtheta_path, ddtheta_path = ctrl.calculate_trajectory(points)
+target_theta_path = np.zeros_like(theta_path)
+target_theta_path[:-1,:] = theta_path[1:]
+target_theta_path[-1] = target_theta_path[-2]
 tau = ctrl.inverse_dynamics(theta_path, dtheta_path, ddtheta_path)*0.3 + 0.7*ctrl.inverse_dynamics2(theta_path, dtheta_path, ddtheta_path)
 tau[-1] = 1/0.7*tau[-1]
-sa = np.column_stack((theta_path[:,0],dtheta_path[:,0],theta_path[:,1],dtheta_path[:,1], tau))
+sa = np.column_stack((theta_path[:,0],dtheta_path[:,0],theta_path[:,1],dtheta_path[:,1], target_theta_path[:,0], target_theta_path[:,1], tau))
+print(sa)
 # Save [state, action]
 with open('stateaction.csv', 'w', newline='') as file:
     writer = csv.writer(file)

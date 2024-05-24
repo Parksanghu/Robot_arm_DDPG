@@ -6,6 +6,7 @@ from scipy.integrate import odeint
 from gymnasium.error import DependencyNotInstalled
 import matplotlib.pyplot as plt
 import math
+import csv
 
 class LagrangianDynamicsEnv(gym.Env):
     metadata = {
@@ -16,6 +17,13 @@ class LagrangianDynamicsEnv(gym.Env):
     def __init__(self):
         super(LagrangianDynamicsEnv, self).__init__()
         # Define robot arm variables
+        with open('stateaction.csv', mode='r') as file:
+            reader = csv.reader(file)
+            next(reader)  # Skip the header if there is one
+            points = [tuple(map(float, row)) for row in reader] # Convert each row to a tuple (or keep as list)
+        sa = np.array(points)
+        self.target_state = sa[:,4:6]
+    
         self.L = [0.3, 0.25]
         self.lg = [self.L[0]/2, self.L[1]/2]
         self.m = [0.5, 0.5]
@@ -33,6 +41,7 @@ class LagrangianDynamicsEnv(gym.Env):
         # self.t = np.arange(0, 10, self.time_step)
         self.state = None
         self.state_coordinate = None
+        self.steps = None
         self.steps_beyond_terminated = None
         self.target = None
         # Rendering setting
@@ -43,23 +52,23 @@ class LagrangianDynamicsEnv(gym.Env):
         
 
     def reset(self):
-        self.state = [-0.38976073,-3.50728975,0.86321189,2.03827379]  # Initial state
+        self.state = [-0.38976073,-3.50728975,0.86321189,2.03827379] # Initial state
         self.steps_beyond_terminated = None
+        self.steps = 0
     
         return np.array(self.state, dtype=np.float32), {}
 
-    def step(self, action, target):
+    def step(self, action):
         # next_state integration
-        
         next_state = odeint(self.lagrangian_dynamics, self.state, [0, self.time_step], args=(action, ))[-1]
         self.state = next_state
         
         # For reward setting, represent fingertip in Cartesian coordinate
         self.state_coordinate = np.array([self.L[0]*math.cos(self.state[0])+self.L[1]*math.cos(self.state[0]+self.state[2]),
                                           self.L[0]*math.sin(self.state[0])+self.L[1]*math.sin(self.state[0]+self.state[2])])
-        self.target = np.array(target)
-        self.target_coordinate = np.array([self.L[0]*math.cos(self.target[0])+self.L[1]*math.cos(self.target[0]+self.target[2]),
-                                           self.L[0]*math.sin(self.target[0])+self.L[1]*math.sin(self.target[0]+self.target[2])])
+        self.target = self.target_state[self.steps]
+        self.target_coordinate = np.array([self.L[0]*math.cos(self.target[0])+self.L[1]*math.cos(self.target[0]+self.target[1]),
+                                           self.L[0]*math.sin(self.target[0])+self.L[1]*math.sin(self.target[0]+self.target[1])])
         distance = np.linalg.norm(self.state_coordinate - self.target_coordinate)
         
         # Termination condition
@@ -74,19 +83,9 @@ class LagrangianDynamicsEnv(gym.Env):
         )
         
         if terminated:
-            if self.steps_beyond_terminated is None:
-                # termination occurs
-                self.steps_beyond_terminated = 0
-
-            else:
-                if self.steps_beyond_terminated == 0:
-                    logger.warn(
-                        "You are calling 'step()' even though this "
-                        "environment has already returned terminated = True. You "
-                        "should always call 'reset()' once you receive 'terminated = "
-                        "True' -- any further steps are undefined behavior."
-                    )
-                self.steps_beyond_terminated += 1
+            self.steps = 0
+        else:
+            self.steps += 1
                 
         reward = 0
         if distance < 0.1:
