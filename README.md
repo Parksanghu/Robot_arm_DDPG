@@ -1,4 +1,4 @@
-# Sym_robot_arm
+# Robot_arm_DDPG
 lagrangian_dynamics_env: Custom 2D reacher env. Unlike fixed target in openai Gym Reacher, the target is moving in certain trajectory. Lagrange euler method used for dynamics. 
 
 trajectory_generator: Create target trajectory in cartesian coordinate. Code mostly from https://github.com/rparak/2-Link_Manipulator by MIT. 
@@ -9,3 +9,5 @@ demonstration_generator: Calculate needed joint angle, joint veloctiy, joint tor
                          
 twolink_DDPG_trial: DDPG with demonstration. PER (Prioritized Experience Replay) not used, just ERB (Experience Replay Buffer). 
 
+# Contact info:
+jack7070@kaist.ac.kr
